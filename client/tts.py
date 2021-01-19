@@ -49,6 +49,84 @@ import sys
 reload(sys)
 sys.setdefaultencoding('utf8')
 
+# baidu new tts api
+IS_PY3 = sys.version_info.major == 3
+if IS_PY3:
+    from urllib.request import urlopen
+    from urllib.request import Request
+    from urllib.error import URLError
+    from urllib.parse import urlencode
+    from urllib.parse import quote_plus
+else:
+    import urllib2
+    from urllib import quote_plus
+    from urllib2 import urlopen
+    from urllib2 import Request
+    from urllib2 import URLError
+    from urllib import urlencode
+
+
+TEXT = "欢迎使用百度语音合成。"
+
+# 发音人选择, 基础音库：0为度小美，1为度小宇，3为度逍遥，4为度丫丫，
+# 精品音库：5为度小娇，103为度米朵，106为度博文，110为度小童，111为度小萌，默认为度小美 
+PER = 4
+# 语速，取值0-15，默认为5中语速
+SPD = 5
+# 音调，取值0-15，默认为5中语调
+PIT = 5
+# 音量，取值0-9，默认为5中音量
+VOL = 5
+# 下载的文件格式, 3：mp3(default) 4： pcm-16k 5： pcm-8k 6. wav
+AUE = 3
+
+FORMATS = {3: "mp3", 4: "pcm", 5: "pcm", 6: "wav"}
+FORMAT = FORMATS[AUE]
+
+CUID = str(get_mac())[:32] # "123456PYTHON"
+
+TTS_URL = 'http://tsn.baidu.com/text2audio'
+
+"""  TOKEN start """
+
+TOKEN_URL = 'http://openapi.baidu.com/oauth/2.0/token'
+SCOPE = 'audio_tts_post'  # 有此scope表示有tts能力，没有请在网页里勾选
+
+
+def fetch_token(api_key,secret_key):
+    # print("fetch token begin")
+    params = {'grant_type': 'client_credentials',
+              'client_id': api_key,
+              'client_secret': secret_key}
+    post_data = urlencode(params)
+    if (IS_PY3):
+        post_data = post_data.encode('utf-8')
+    req = Request(TOKEN_URL, post_data)
+    try:
+        f = urlopen(req, timeout=5)
+        result_str = f.read()
+    except URLError as err:
+        # print('token http response http code : ' + str(err.code))
+        result_str = err.read()
+    if (IS_PY3):
+        result_str = result_str.decode()
+
+    # print(result_str)
+    result = json.loads(result_str)
+    # print(result)
+    if ('access_token' in result.keys() and 'scope' in result.keys()):
+        if not SCOPE in result['scope'].split(' '):
+            raise DemoError('scope is not correct')
+        # print('SUCCESS WITH TOKEN: %s ; EXPIRES IN SECONDS: %s' % (result['access_token'], result['expires_in']))
+        return result['access_token']
+    else:
+        raise DemoError('MAYBE API_KEY or SECRET_KEY not correct: access_token or scope not found in token response')
+
+
+"""  TOKEN end """
+
+
+
 
 class AbstractTTSEngine(object):
     """
@@ -141,6 +219,118 @@ class AbstractMp3TTSEngine(AbstractTTSEngine):
 
 
 class BaiduTTS(AbstractMp3TTSEngine):
+
+    SLUG = "baidu-tts"
+
+    def __init__(self, api_id, api_key, secret_key, per=0, **args):
+        super(self.__class__, self).__init__()
+        self._logger = logging.getLogger(__name__)
+        self.api_id = api_id
+        self.api_key = api_key
+        self.secret_key = secret_key
+        self.per = per
+        self.token = ''
+
+    @classmethod
+    def get_config(cls):
+        # Try to get baidu_yuyin config from config
+        return config.get('baidu_yuyin', {})
+
+    @classmethod
+    def is_available(cls):
+        return diagnose.check_network_connection()
+
+    def get_token(self):
+        cache = open(os.path.join(dingdangpath.TEMP_PATH, 'baidustt.ini'),
+                     'a+')
+        try:
+            pms = cache.readlines()
+            if len(pms) > 0:
+                time = pms[0]
+                tk = pms[1]
+                # 计算token是否过期 官方说明一个月，这里保守29天
+                time = dparser.parse(time)
+                endtime = datetime.datetime.now()
+                if (endtime - time).days <= 29:
+                    return tk
+        finally:
+            cache.close()
+        try:
+            token = fetch_token(self.api_key,self.secret_key)
+            return token
+        except requests.exceptions.HTTPError:
+            self._logger.critical('Token request failed with response: %r',
+                                  r.text,
+                                  exc_info=True)
+            return ''
+
+
+    def split_sentences(self, text):
+        punctuations = ['.', '。', ';', '；', '\n']
+        for i in punctuations:
+            text = text.replace(i, '@@@')
+        return text.split('@@@')
+
+    def get_speech(self, phrase):
+        self._logger.critical('stt>>>> : ' + str(phrase),exc_info=True)
+        if self.token == '':
+            self.token = fetch_token()
+        self._logger.critical('stt token>>>> : ' + str(self.token),exc_info=True)
+        self._logger.critical('stt token>>>> : ' + str(phrase),exc_info=True)
+        self._logger.critical('stt token>>>> : ' + str(self.per),exc_info=True)
+        self._logger.critical('stt token>>>> : ' + str(SPD),exc_info=True)
+        self._logger.critical('stt token>>>> : ' + str(PIT),exc_info=True)
+        self._logger.critical('stt token>>>> : ' + str(VOL),exc_info=True)
+        self._logger.critical('stt token>>>> : ' + str(AUE),exc_info=True)
+        self._logger.critical('stt token>>>> : ' + str(get_mac())[:32],exc_info=True)
+
+
+        params = {'tok': self.token,
+                  'tex': phrase,
+                  'per': self.per,
+                  'spd': SPD,
+                  'pit': PIT,
+                  'vol': VOL,
+                  'aue': AUE,
+                  'cuid': str(get_mac())[:32],
+                  'lan': 'zh', 'ctp': 1}  # lan ctp 固定参数
+        data = urlencode(params)
+        req = Request(TTS_URL, data.encode('utf-8'))
+        has_error = False
+        try:
+            f = urlopen(req)
+            result_str = f.read()
+
+            headers = dict((name.lower(), value) for name, value in f.headers.items())
+
+            has_error = ('content-type' not in headers.keys() or headers['content-type'].find('audio/') < 0)
+        except  URLError as err:
+            self._logger.critical('asr http response http code : ' + str(err.code),exc_info=True)
+            result_str = err.read()
+            has_error = True
+
+        if has_error:
+            if (IS_PY3):
+                result_str = str(result_str, 'utf-8')
+                self._logger.critical("tts api  error:" + result_str.json()['err_msg'],exc_info=True)
+                return None
+
+        # try:
+        #     result_str.raise_for_status()
+        #     if result_str.json()['err_msg'] is not None:
+        #         self._logger.critical('Baidu TTS failed with response: %result_str',
+        #                               result_str.json()['err_msg'],
+        #                               exc_info=True)
+        #         return None
+        # except Exception:
+        #     pass
+        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as f:
+            f.write(result_str)
+            tmpfile = f.name
+            return tmpfile
+
+
+class BaiduTTS2018(AbstractMp3TTSEngine):
     """
     使用百度语音合成技术
     要使用本模块, 首先到 yuyin.baidu.com 注册一个开发者账号,
@@ -153,11 +343,12 @@ class BaiduTTS(AbstractMp3TTSEngine):
         ...
     """
 
-    SLUG = "baidu-tts"
+    SLUG = "baidu-tts2018"
 
-    def __init__(self, api_key, secret_key, per=0, **args):
+    def __init__(self, api_id, api_key, secret_key, per=0, **args):
         super(self.__class__, self).__init__()
         self._logger = logging.getLogger(__name__)
+        self.api_id = api_id
         self.api_key = api_key
         self.secret_key = secret_key
         self.per = per
@@ -234,7 +425,6 @@ class BaiduTTS(AbstractMp3TTSEngine):
             f.write(r.content)
             tmpfile = f.name
             return tmpfile
-
 
 class IFlyTekTTS(AbstractMp3TTSEngine):
     """
